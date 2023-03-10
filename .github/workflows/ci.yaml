@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ '*' ]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Visual Studio Build Tools
+        uses: microsoft/setup-msbuild@v1
+
+      - uses: jurplel/install-qt-action@v3
+        with:
+          version: 5.15.*
+          host: windows
+
+      - run: choco install -y jom
+
+      - uses: egor-tensin/vs-shell@v2
+        with:
+          arch: x64
+
+      - name: Build
+        run: qmake -r picviewer.pro && jom -j2
+
+      - name: "Create windows pe executeable"
+        working-directory: release
+        run: windeployqt --qmldir .. picviewer.exe --pdb --release --compiler-runtime
+#          copy C:\Windows\System32\concrt140.dll . 
+#          copy C:\Windows\System32\vccorlib140.dll .
+#          copy C:\Windows\System32\msvcp140.dll .
+#          copy C:\Windows\System32\vcruntime140.dll .
+
+      - run: dir release
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: windows-picviewer
+          path: "release/picviewer.exe"
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: windows-picviewer-ALL
+          path: "release/"
+
+  # TODO
+  package-windows:
+    needs: [build-windows]
+    runs-on: windows-latest
+    steps:    
+      - uses: actions/download-artifact@v3
+        with:
+          name: windows-picviewer
+
+      - name: Install Wix Toolset
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip" -OutFile "$env:TEMP\wix311-binaries.zip"
+          Expand-Archive -Path "$env:TEMP\wix311-binaries.zip" -DestinationPath "$env:WIX" -Force
+          $env:WIX = (Get-Item -Path "$env:WIX\bin").FullName
+          $env:PATH += ";$env:WIX"
+
+      - name: Create WiX installer
+        run: |
+          candle picviewer.wxs
+          light picviewer.wixobj -o picviewer.msi
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: windows-picviewer-msi
+          path: picviewer.msi
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: jurplel/install-qt-action@v3
+        with:
+          version: 5.15.*
+
+      - run: qmake picviewer.pro && make
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: macos-picviewer
+          path: "picviewer.app"
+  
+  package-macos:
+    needs: [build-macos]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: macos-picviewer
+
+      - name: Create DMG
+        run: hdiutil create -volname "PicViewer" -srcfolder . -ov -format UDZO picviewer.dmg
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: macos-picviewer-dmg
+          path: "picviewer.dmg"
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: jurplel/install-qt-action@v3
+        with:
+          version: 5.15.*
+
+      - run: qmake -o Makefile picviewer.pro && make
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: linux-picviewer
+          path: picviewer
+
+  package-linux-deb:
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: linux-picviewer
+
+      - name: Copy binary
+        run: |
+          mkdir -p deb/usr/local/bin
+          cp picviewer deb/usr/local/bin/picviewer
+          chmod +x deb/usr/local/bin/picviewer
+
+      - run: find .
+
+      - name: Build deb
+        run: |
+          dpkg-deb --build --root-owner-group deb
+
+      - name: Rename deb
+        run: mv deb.deb picviewer_$(dpkg-deb -f deb.deb Version)_$(dpkg-deb -f deb.deb Architecture).deb
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: linux-picviewer-deb
+          path: "*.deb"
+
+  # TODO
+  package-linux-rpm:
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: linux-picviewer
+
+      - name: Build RPM
+        run: |
+          mkdir -p ~/rpmbuild/{SOURCES,SPECS}
+          cp rpm/picview.spec ~/rpmbuild/SPECS/
+          tar czf ~/rpmbuild/SOURCES/src.tar.gz picviewer
+          rpmbuild -bb ~/rpmbuild/SPECS/picview.spec
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: linux-picviewer-rpm
+          path: |
+            ~/rpmbuild/RPMS/$(uname -m)/*.rpm
+            !./*-debuginfo-*.rpm

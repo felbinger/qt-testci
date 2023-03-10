@@ -1,0 +1,6 @@
+Package: picviewer
+Version: 0.0.1
+Architecture: all
+Maintainer: Nobody <nobody@github.com>
+Description: Example application for CI testing.
+
